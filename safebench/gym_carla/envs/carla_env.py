@@ -34,7 +34,8 @@ from safebench.scenario.scenario_definition.scenic_scenario import ScenicScenari
 from safebench.scenario.scenario_manager.scenario_manager import ScenarioManager
 from safebench.scenario.tools.route_manipulation import interpolate_trajectory
 
-from safebench.gym_carla.envs.phys_safe import (extreme_safe_longitudinal, extreme_safe_lateral)
+from safebench.gym_carla.envs.phys_safe import (phys_safe_lat_opp,phys_safe_lat_same,phys_safe_opposite,phys_safe_same_lane,set_from_cfg)
+from types import SimpleNamespace
 
 
 class CarlaEnv(gym.Env):
@@ -49,6 +50,10 @@ class CarlaEnv(gym.Env):
         self.display = display
         self.logger = logger
         self.birdeye_render = birdeye_render
+
+        # rl config
+        self.rl_config = env_params['rl_config']
+        set_from_cfg(self.rl_config['phys_safe'])
 
         # Record the time of total steps and resetting steps
         self.reset_step = 0
@@ -581,58 +586,163 @@ class CarlaEnv(gym.Env):
         for veh in self.world.get_actors().filter('vehicle.*'):
             if veh.id == self.ego_vehicle.id:
                 continue
+            # 只能告诉标量距离,不能得到具体的对应方向向量
             d = ego_loc.distance(veh.get_transform().location)
             if d < min_d and d < radius:
                 min_d, closest = d, veh
         return closest, min_d
 
-    # ---------- r_phys：逼近物理极限距离 ----------
+    def safe_lon_distance(self, v_av_lon, v_npc_lon,
+                      yaw_av, yaw_npc):
+        """
+        纵向物理解安全距 d_safe^{lon}
+
+        yaw: deg, CARLA 0° → +x
+        规则：
+        · |Δyaw| ≤ th_same      → 同向公式
+        · |Δyaw| ≥ th_oppo      → 对向公式
+        · 其余 (侧向交会区)     → **仍用对向公式**（更保守）
+        """
+        ps_cfg = self.rl_config['phys_safe']
+        dyaw = (yaw_npc - yaw_av + 180) % 360 - 180   # [-180,180]
+
+        if abs(dyaw) <= ps_cfg['th_same_dir']:
+            # 同向：追尾 / 加塞
+            return phys_safe_same_lane(v_av_lon, v_npc_lon)
+        else:
+            # 对向或侧向交会 → 用迎面对向公式更安全
+            return phys_safe_opposite(v_av_lon, v_npc_lon)
+        
+
+    def safe_lat_distance(self, v_av_lat, v_npc_lat):
+        """
+        返回横向物理解安全距 d_safe^{lat}
+        """
+        ps_cfg = self.rl_config['phys_safe']
+        eps = ps_cfg['eps']
+        same_dir = np.sign(v_av_lat) == np.sign(v_npc_lat) and \
+                abs(v_av_lat) > eps and abs(v_npc_lat) > eps
+        if same_dir:
+            return phys_safe_lat_same(v_av_lat, v_npc_lat)
+        else:
+            return phys_safe_lat_opp(v_av_lat, v_npc_lat)
+        
+
     def _get_phys_reward(self):
-        npc, dist = self._get_closest_vehicle()
+        ps_cfg = self.rl_config['phys_safe']
+        INF_DIST = ps_cfg['INF_DIST']
+        eps =ps_cfg['eps']
+        DENOM_MIN = 0.05                  # 避免分母过小
+        npc, _ = self._get_closest_vehicle()
         if npc is None:
             return 0.0
 
-        # 取世界坐标差向量
-        ego_loc  = self.ego_vehicle.get_transform().location
-        npc_loc  = npc.get_transform().location
-        rel_vec  = np.array([npc_loc.x - ego_loc.x,
-                             npc_loc.y - ego_loc.y])
+        # —— 先把 NPC 位姿、速度变到 Ego 车体坐标系 ——
+        ego_tf = self.ego_vehicle.get_transform()
+        npc_tf = npc.get_transform()
 
-        # 速度（世界坐标）
-        v_av  = self.ego_vehicle.get_velocity()
-        v_npc = npc.get_velocity()
+        # ① 距离
+        rel_w = np.array([npc_tf.location.x - ego_tf.location.x,
+                        npc_tf.location.y - ego_tf.location.y])
+        yaw_av = ego_tf.rotation.yaw
+        yaw    = np.deg2rad(yaw_av)
+        R      = np.array([[ np.cos(yaw),  np.sin(yaw)],
+                        [-np.sin(yaw),  np.cos(yaw)]])
+        dx, dy = R @ rel_w                         # lon, lat 距离
 
-        # 判断是否同车道：这里用横向距离粗判，≤2 m 视为同向车道
-        same_lane = abs(rel_vec[1]) < 2.0
+        # ② 速度分量
+        # v_av_w  = np.array([*self.ego_vehicle.get_velocity()[:2]])
+        # v_npc_w = np.array([*npc.get_velocity()[:2]])
 
-        d_safe_lon = extreme_safe_longitudinal(v_av.x, v_npc.x, same_lane)
-        d_safe_lat = extreme_safe_lateral(v_av.y - v_npc.y)
-        d_safe     = max(d_safe_lon, d_safe_lat)
+        v_av_vec  = self.ego_vehicle.get_velocity()
+        v_npc_vec = npc.get_velocity()
 
-        return 1.0 if dist < d_safe else 0.0
+        v_av_w  = np.array([v_av_vec.x,  v_av_vec.y])
+        v_npc_w = np.array([v_npc_vec.x, v_npc_vec.y])
+        v_av, v_npc = R @ v_av_w, R @ v_npc_w      # lon/lat
+        v_av_lon, v_av_lat   = v_av
+        v_npc_lon, v_npc_lat = v_npc
+        yaw_npc = npc_tf.rotation.yaw
+
+        # ③ 计算安全距离
+        d_safe_lon = self.safe_lon_distance(v_av_lon, v_npc_lon,
+                                    yaw_av, yaw_npc)
+
+        d_safe_lat = self.safe_lat_distance(v_av_lat, v_npc_lat)
+
+        if d_safe_lat >= INF_DIST * 0.5 or d_safe_lon >= INF_DIST * 0.5:
+            return -1.0
+        
+        if d_safe_lon <= eps and d_safe_lat <= eps:
+            return 0                  # 绝对安全，不奖励
+        
+        # ④ 计算差值 Δ  (>0 ⇒ 安全区；<0 ⇒ 危险区)
+        Δx = abs(dx) - d_safe_lon      # 纵向差值
+        Δy = abs(dy) - d_safe_lat      # 横向差值
+
+        # 如果某一轴已安全，则只看另一轴
+        if Δx > 0 and Δy > 0:
+            return 0.0                 # 两轴都更安全 → 0 分
+        elif Δx > 0:                   # 纵向安全，只看横向
+            norm = Δy / (d_safe_lat + eps)
+        elif Δy > 0:                   # 横向安全，只看纵向
+            norm = Δx / (d_safe_lon + eps)
+        else:                          # 都不安全，联合惩罚
+            norm = np.sqrt((-Δx)/(d_safe_lon+eps))**2 + \
+                np.sqrt((-Δy)/(d_safe_lat+eps))**2
+
+        # norm ∈ [0, ∞)，0 表示刚好临界，>0 危险
+        return -norm                  # 越危险 (norm↑) 惩罚越大
+
+        # # ---------- 单轴安全 ----------
+        # if d_safe_lon <= eps:        # 纵向安全，只算横向
+        #     sigma = (dy / d_safe_lat) ** 2
+        # elif d_safe_lat <= eps:      # 横向安全，只算纵向
+        #     sigma = (dx / d_safe_lon) ** 2
+        # else:                             # 两轴都算
+        # # ④ 椭圆判定
+        #     sigma = (dx / (d_safe_lon))**2 + (dy / (d_safe_lat))**2
+
+        # # 连续奖励：越接近极限越高，超出极限重罚
+        # return 1 - sigma if sigma < 1 else -sigma
+
+
+
 
     # ---------- r_adv：促使 NPC 主动接近 AV ----------
     def _get_adv_reward(self):
         npc, dist = self._get_closest_vehicle()
         if npc is None:
             return 0.0
+        
+        adv_cfg = self.rl_config['adv_reward']
 
-        # 计算 TTC（正向逼近才算数）
+        # ① TTC
         v_rel = npc.get_velocity() - self.ego_vehicle.get_velocity()
         rel_vec = npc.get_transform().location - self.ego_vehicle.get_transform().location
-        rel_long_speed = (v_rel.x * rel_vec.x + v_rel.y * rel_vec.y) / max(dist, 1e-3)
-        if rel_long_speed <= 0:          # 没有逼近
-            return 0.0
+        rel_speed = (v_rel.x * rel_vec.x + v_rel.y * rel_vec.y) / max(dist, 1e-3)
+        r_ttc = 0
+        if rel_speed > 0:
+            ttc = dist / rel_speed
+            r_ttc = max(0, 1 - ttc / adv_cfg['ttc_horizon'])
 
-        ttc  = dist / rel_long_speed     # s
-        eps  = 3.0                       # 3 秒内碰到算高风险
-        return max(0.0, 1 - ttc/eps)     # 0~1
+        # ② Head-way
+        # v_ego = np.linalg.norm(self.ego_vehicle.get_velocity()[:2])
+
+        v_ego_vec = self.ego_vehicle.get_velocity()
+        v_ego = np.linalg.norm([v_ego_vec.x, v_ego_vec.y])
+    
+        headway = dist / max(v_ego, 0.1)
+        r_hw = max(0, 1 - headway / adv_cfg['desired_headway'])
+
+        return adv_cfg['w_ttc'] * r_ttc + adv_cfg['w_headway'] * r_hw
+
 
     def _get_scenario_reward(self):
-        w_phys, w_adv = 1.0, 3.0          # 建议写到 yaml，再 self.xxx 读取
+        sr_cfg = self.rl_config['scenario_reward']
         r_phys = self._get_phys_reward()
         r_adv  = self._get_adv_reward()
-        return w_phys * r_phys + w_adv * r_adv
+        return  sr_cfg['w_phys'] * r_phys + sr_cfg['w_adv']  * r_adv 
     # 
 
 

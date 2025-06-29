@@ -9,7 +9,7 @@
     "buffer_start_training":	100,
     "continue_agent_training":	false,
     "continue_scenario_training":	false,
-    "device":	"cuda:0",
+    "device":	"cuda:1",
     "ego_action_dim":	2,
     "ego_action_limit":	1.0,
     "ego_state_dim":	4,
@@ -29,6 +29,29 @@
     "policy_type":	"sac",
     "port":	2000,
     "render":	true,
+    "rl_config":	{
+        "adv_reward":	{
+            "desired_headway":	1.8,
+            "ttc_horizon":	3.0,
+            "w_headway":	0.3,
+            "w_ttc":	0.7
+        },
+        "phys_safe":	{
+            "INF_DIST":	10000,
+            "a_lat_dec_av":	1.5,
+            "a_lat_dec_npc":	1.5,
+            "a_lon_dec_av":	4.0,
+            "a_lon_dec_npc":	4.0,
+            "eps":	0.0001,
+            "min_lat_safe":	0.3,
+            "th_oppo_dir":	150,
+            "th_same_dir":	30
+        },
+        "scenario_reward":	{
+            "w_adv":	3.0,
+            "w_phys":	1.0
+        }
+    },
     "route_dir":	"safebench/scenario/scenario_data/route2",
     "route_id":	4,
     "save_freq":	1,

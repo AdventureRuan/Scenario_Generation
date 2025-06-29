@@ -201,7 +201,11 @@ def count_vars(module):
 
 
 def CUDA(var):
-    return var.cuda() if torch.cuda.is_available() else var
+    # return var.cuda() if torch.cuda.is_available() else var
+    if not torch.cuda.is_available():
+        return var
+    dev = os.environ.get("MODEL_DEVICE", "cuda:0")
+    return var.to(dev)
 
 
 def CPU(var):

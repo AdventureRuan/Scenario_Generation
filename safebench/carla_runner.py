@@ -34,6 +34,7 @@ class CarlaRunner:
     def __init__(self, agent_config, scenario_config):
         self.scenario_config = scenario_config
         self.agent_config = agent_config
+        self.rl_config = scenario_config['rl_config']
 
         self.seed = scenario_config['seed']
         self.exp_name = scenario_config['exp_name']
@@ -51,8 +52,9 @@ class CarlaRunner:
         self.continue_scenario_training = scenario_config['continue_scenario_training']
 
         # apply settings to carla
-        self.client = carla.Client('localhost', scenario_config['port'])
-        self.client.set_timeout(10.0)
+        # self.client = carla.Client('localhost', scenario_config['port'])
+        self.client = carla.Client('10.113.164.75', scenario_config['port'])
+        self.client.set_timeout(30.0)
         self.world = None
         self.env = None
 
@@ -78,6 +80,7 @@ class CarlaRunner:
             'out_lane_thres': 4,                                       # threshold for out of lane (meter)
             'desired_speed': 8,                                        # desired speed (m/s)
             'image_sz': 1024,                                          # TODO: move to config of od scenario
+            'rl_config': self.rl_config
         }
 
         # pass config from scenario to agent
@@ -314,7 +317,7 @@ class CarlaRunner:
 
             # create scenarios within the vectorized wrapper
             self.env = VectorWrapper(
-                self.env_params, 
+                self.env_params,  # 其中包含 rl_safe_cfg
                 self.scenario_config, 
                 self.world, 
                 self.birdeye_render, 

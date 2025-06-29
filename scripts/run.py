@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--threads', type=int, default=4)
-    parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu')   
+    parser.add_argument('--device', type=str, default='cuda:1' if torch.cuda.is_available() else 'cpu')   
 
     # 这个是用来一下跑几个场景，每个场景互不影响
     parser.add_argument('--num_scenario', '-ns', type=int, default=1, help='num of scenarios we run in one episode')
@@ -65,9 +65,16 @@ if __name__ == '__main__':
             scenario_config_path = osp.join(args.ROOT_DIR, 'safebench/scenario/config', scenario_cfg)
             scenario_config = load_config(scenario_config_path)
 
+            # load RL_safe config
+            rl_path = osp.join(args.ROOT_DIR, 'scripts/rlconfig.yaml')
+            rl_config = load_config(rl_path)
+
             # main entry with a selected mode
             agent_config.update(args_dict)
             scenario_config.update(args_dict)
+            # rl_safe_config.update(args_dict)
+            scenario_config['rl_config'] = rl_config
+
             if scenario_config['policy_type'] == 'scenic':
                 from safebench.scenic_runner import ScenicRunner
                 assert scenario_config['num_scenario'] == 1, 'the num_scenario can only be one for scenic now'

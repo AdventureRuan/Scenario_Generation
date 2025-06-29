@@ -30,7 +30,7 @@ class VectorWrapper():
         self.env_list = []
         self.action_space_list = []
         for i in range(self.num_scenario):
-            env = carla_env(env_params, birdeye_render=birdeye_render, display=display, world=world, logger=logger)
+            env = carla_env(env_params, birdeye_render=birdeye_render, display=display, world=world, logger=logger) #传入了rl_safe的参数
             self.env_list.append(env)
             self.action_space_list.append(env.action_space)
 
