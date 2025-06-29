@@ -27,7 +27,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_episode_step', type=int, default=300)
     parser.add_argument('--auto_ego', action='store_true')
-    parser.add_argument('--mode', '-m', type=str, default='train_scenario', choices=['train_agent', 'train_scenario', 'eval'])
+    parser.add_argument('--mode', '-m', type=str, default='eval', choices=['train_agent', 'train_scenario', 'eval'])
     parser.add_argument('--agent_cfg', nargs='*', type=str, default=['behavior.yaml'])
     parser.add_argument('--scenario_cfg', nargs='*', type=str, default=['sac.yaml'])
     parser.add_argument('--continue_agent_training', '-cat', type=bool, default=False)
@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--threads', type=int, default=4)
-    parser.add_argument('--device', type=str, default='cuda:1' if torch.cuda.is_available() else 'cpu')   
+    parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu')   
 
     # 这个是用来一下跑几个场景，每个场景互不影响
     parser.add_argument('--num_scenario', '-ns', type=int, default=1, help='num of scenarios we run in one episode')
@@ -48,6 +48,15 @@ if __name__ == '__main__':
     parser.add_argument('--fixed_delta_seconds', type=float, default=0.1)
     args = parser.parse_args()
     args_dict = vars(args)
+    
+
+    _default_device = args.device
+    _old_torch_load = torch.load
+    def _patched_torch_load(f, *args, **kwargs):
+        if 'map_location' not in kwargs:
+            kwargs['map_location'] = _default_device
+        return _old_torch_load(f, *args, **kwargs)
+    torch.load = _patched_torch_load
 
     err_list = []
     for agent_cfg in args.agent_cfg:
